@@ -10,14 +10,31 @@ from pathlib import Path
 
 from .analyzer import Candidate, PhotoAnalyzer, deduplicate, select_balanced
 from .config import PLATFORMS
-from .drive import download_file, ensure_output_tree, extract_folder_id, get_drive_service, list_images, upload_bytes, upload_text
+from .drive import (
+    download_file,
+    ensure_output_tree,
+    extract_folder_id,
+    find_or_create_folder,
+    get_drive_service,
+    list_images,
+    upload_bytes,
+    upload_text,
+)
 from .editor import enhance, jpeg_bytes, render_variant
 
 
 CATEGORY_PRIORITY = {
-    "living": 0, "exterior": 1, "bedroom": 2, "view": 3, "kitchen": 4,
-    "bathroom": 5, "workspace": 6, "amenity": 7, "entrance": 8,
-    "toilet": 9, "layout": 10,
+    "living": 0,
+    "exterior": 1,
+    "bedroom": 2,
+    "view": 3,
+    "kitchen": 4,
+    "bathroom": 5,
+    "workspace": 6,
+    "amenity": 7,
+    "entrance": 8,
+    "toilet": 9,
+    "layout": 10,
 }
 
 
@@ -44,26 +61,46 @@ def _csv_report(candidates: list[Candidate]) -> str:
 
 
 def _hero_sort(c: Candidate):
-    return (CATEGORY_PRIORITY.get(c.category, 99), -(c.quality * 0.8 + c.category_score * 0.2))
+    return (
+        CATEGORY_PRIORITY.get(c.category, 99),
+        -(c.quality * 0.8 + c.category_score * 0.2),
+    )
 
 
-def _platform_selection(key: str, selected: list[Candidate], candidates: list[Candidate], min_selected: int) -> list[Candidate]:
+def _platform_selection(
+    key: str,
+    selected: list[Candidate],
+    candidates: list[Candidate],
+    min_selected: int,
+) -> list[Candidate]:
     output = list(selected)
     if key == "instabase":
-        # Instabase explicitly disallows bed photos when they represent lodging/overnight use.
+        # Instabase向けには宿泊利用を直接想起させる寝室写真を出力しない。
         output = [c for c in output if c.category != "bedroom"]
         output_ids = {c.file_id for c in output}
         if len(output) < min_selected:
             extras = sorted(
                 (
-                    c for c in candidates
-                    if not c.rejected and c.category != "bedroom" and c.file_id not in output_ids
+                    c
+                    for c in candidates
+                    if not c.rejected
+                    and c.category != "bedroom"
+                    and c.file_id not in output_ids
                 ),
-                key=lambda c: (c.quality * 0.8 + c.category_score * 0.2),
+                key=lambda c: c.quality * 0.8 + c.category_score * 0.2,
                 reverse=True,
             )
             output.extend(extras[: max(0, min_selected - len(output))])
     return sorted(output, key=_hero_sort)
+
+
+def _resolve_platforms(platform_keys: tuple[str, ...] | None) -> dict:
+    if platform_keys is None:
+        return dict(PLATFORMS)
+    unknown = [key for key in platform_keys if key not in PLATFORMS]
+    if unknown:
+        raise ValueError(f"未対応のプラットフォームです: {', '.join(unknown)}")
+    return {key: PLATFORMS[key] for key in platform_keys}
 
 
 def run_drive_pipeline(
@@ -71,6 +108,8 @@ def run_drive_pipeline(
     credentials: str | None = None,
     token_file: str | None = None,
     output_folder_name: str = "リスティング用_加工済み",
+    output_folder_id: str | None = None,
+    platform_keys: tuple[str, ...] | None = None,
     min_selected: int = 15,
     max_selected: int = 28,
     dry_run: bool = False,
@@ -78,6 +117,10 @@ def run_drive_pipeline(
 ) -> dict:
     if min_selected < 1 or max_selected < min_selected:
         raise ValueError("min_selected / max_selected の指定が不正です")
+
+    selected_presets = _resolve_platforms(platform_keys)
+    if not selected_presets:
+        raise ValueError("出力プラットフォームが指定されていません")
 
     source_folder_id = extract_folder_id(folder_url_or_id)
     service = get_drive_service(credentials, token_file)
@@ -98,11 +141,19 @@ def run_drive_pipeline(
             candidates.append(analyzer.analyze(item["id"], item["name"], local))
 
         deduplicate(candidates)
-        selected = select_balanced(candidates, min_selected=min_selected, max_selected=max_selected)
+        selected = select_balanced(
+            candidates,
+            min_selected=min_selected,
+            max_selected=max_selected,
+        )
         selected = sorted(selected, key=_hero_sort)
 
         report_csv = _csv_report(candidates)
-        report_json = json.dumps([c.report_dict() for c in candidates], ensure_ascii=False, indent=2)
+        report_json = json.dumps(
+            [c.report_dict() for c in candidates],
+            ensure_ascii=False,
+            indent=2,
+        )
 
         summary = {
             "source_folder_id": source_folder_id,
@@ -110,51 +161,93 @@ def run_drive_pipeline(
             "selected_images": len(selected),
             "rejected_images": sum(1 for c in candidates if c.rejected),
             "selected": [c.report_dict() for c in selected],
+            "platforms": list(selected_presets),
             "output_folder_id": None,
             "output_folder_name": None,
         }
         if dry_run:
             return summary
 
-        run_name = f"{output_folder_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        folder_map = ensure_output_tree(
-            service,
-            source_folder_id,
-            run_name,
-            [preset.name for preset in PLATFORMS.values()],
-        )
-        summary["output_folder_id"] = folder_map["root"]
-        summary["output_folder_name"] = run_name
+        if output_folder_id:
+            root_id = extract_folder_id(output_folder_id)
+            folder_map = {"root": root_id}
+            for preset in selected_presets.values():
+                folder_map[preset.name] = find_or_create_folder(
+                    service,
+                    root_id,
+                    preset.name,
+                )
+            summary["output_folder_id"] = root_id
+            summary["output_folder_name"] = "既存フォルダ"
+        else:
+            run_name = f"{output_folder_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            folder_map = ensure_output_tree(
+                service,
+                source_folder_id,
+                run_name,
+                [preset.name for preset in selected_presets.values()],
+            )
+            summary["output_folder_id"] = folder_map["root"]
+            summary["output_folder_name"] = run_name
 
         platform_lists: dict[str, list[Candidate]] = {}
-        for key in PLATFORMS:
+        for key in selected_presets:
             if key == "master":
                 continue
-            platform_lists[key] = _platform_selection(key, selected, candidates, min_selected)
+            platform_lists[key] = _platform_selection(
+                key,
+                selected,
+                candidates,
+                min_selected,
+            )
 
-        master_union: list[Candidate] = []
-        union_ids: set[str] = set()
-        for values in platform_lists.values():
-            for c in values:
-                if c.file_id not in union_ids:
-                    union_ids.add(c.file_id)
-                    master_union.append(c)
-        platform_lists["master"] = sorted(master_union, key=_hero_sort)
+        if "master" in selected_presets:
+            master_union: list[Candidate] = []
+            union_ids: set[str] = set()
+            source_lists = platform_lists.values() or [selected]
+            for values in source_lists:
+                for candidate in values:
+                    if candidate.file_id not in union_ids:
+                        union_ids.add(candidate.file_id)
+                        master_union.append(candidate)
+            platform_lists["master"] = sorted(master_union or selected, key=_hero_sort)
 
         rendered_cache: dict[str, object] = {}
-        for key, preset in PLATFORMS.items():
-            values = platform_lists[key]
+        for key, preset in selected_presets.items():
+            values = platform_lists.get(key, selected)
             for order, candidate in enumerate(values, start=1):
                 if progress:
-                    progress(f"出力 {preset.name} {order}/{len(values)}: {candidate.name}")
+                    progress(
+                        f"出力 {preset.name} {order}/{len(values)}: {candidate.name}"
+                    )
                 base = rendered_cache.get(candidate.file_id)
                 if base is None:
                     base = enhance(candidate.path)
                     rendered_cache[candidate.file_id] = base
                 variant = render_variant(base, preset)
-                filename = f"{order:02d}_{candidate.category}_{_safe_stem(candidate.name)}.jpg"
-                upload_bytes(service, folder_map[preset.name], filename, jpeg_bytes(variant, preset.quality), "image/jpeg")
+                filename = (
+                    f"{order:02d}_{candidate.category}_{_safe_stem(candidate.name)}.jpg"
+                )
+                upload_bytes(
+                    service,
+                    folder_map[preset.name],
+                    filename,
+                    jpeg_bytes(variant, preset.quality),
+                    "image/jpeg",
+                )
 
-        upload_text(service, folder_map["root"], "選定レポート.csv", report_csv, "text/csv")
-        upload_text(service, folder_map["root"], "選定レポート.json", report_json, "application/json")
+        upload_text(
+            service,
+            folder_map["root"],
+            "選定レポート.csv",
+            report_csv,
+            "text/csv",
+        )
+        upload_text(
+            service,
+            folder_map["root"],
+            "選定レポート.json",
+            report_json,
+            "application/json",
+        )
         return summary
