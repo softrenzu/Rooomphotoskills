@@ -52,9 +52,13 @@ def _platform_selection(key: str, selected: list[Candidate], candidates: list[Ca
     if key == "instabase":
         # Instabase explicitly disallows bed photos when they represent lodging/overnight use.
         output = [c for c in output if c.category != "bedroom"]
+        output_ids = {c.file_id for c in output}
         if len(output) < min_selected:
             extras = sorted(
-                (c for c in candidates if not c.rejected and c.category != "bedroom" and c not in output),
+                (
+                    c for c in candidates
+                    if not c.rejected and c.category != "bedroom" and c.file_id not in output_ids
+                ),
                 key=lambda c: (c.quality * 0.8 + c.category_score * 0.2),
                 reverse=True,
             )
@@ -122,12 +126,12 @@ def run_drive_pipeline(
         summary["output_folder_id"] = folder_map["root"]
         summary["output_folder_name"] = run_name
 
-        # Build per-platform lists first. Master contains the union of photos that are actually useful somewhere.
         platform_lists: dict[str, list[Candidate]] = {}
         for key in PLATFORMS:
             if key == "master":
                 continue
             platform_lists[key] = _platform_selection(key, selected, candidates, min_selected)
+
         master_union: list[Candidate] = []
         union_ids: set[str] = set()
         for values in platform_lists.values():
