@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rooomphotoskills"
+version = "0.1.0"
+description = "Select, enhance and export Google Drive property photos for listing platforms"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "ROOOMTECH Inc."}]
+dependencies = [
+  "google-api-python-client>=2.160.0",
+  "google-auth>=2.38.0",
+  "google-auth-oauthlib>=1.2.1",
+  "google-auth-httplib2>=0.2.0",
+  "Pillow>=11.0.0",
+  "numpy>=2.0.0",
+  "opencv-python-headless>=4.10.0.84",
+  "ImageHash>=4.3.1",
+  "torch>=2.5.0",
+  "open-clip-torch>=2.30.0",
+  "typer>=0.15.0",
+  "rich>=13.9.0"
+]
+
+[project.scripts]
+rooomphotos = "rooomphotos.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["rooomphotos*"]
