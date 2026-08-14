@@ -8,7 +8,11 @@ from rich.table import Table
 
 from .pipeline import run_drive_pipeline
 
-app = typer.Typer(add_completion=False, no_args_is_help=True, help="Google Drive の物件写真を選定・補正して掲載用に出力します。")
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Google Drive の物件写真を選定・補正して掲載用に出力します。",
+)
 console = Console()
 
 
@@ -16,18 +20,33 @@ def _show_summary(summary: dict) -> None:
     console.print(f"対象画像: {summary['total_images']}枚")
     console.print(f"採用画像: {summary['selected_images']}枚")
     console.print(f"品質/重複等で除外: {summary['rejected_images']}枚")
+    if summary.get("platforms"):
+        console.print(f"出力対象: {', '.join(summary['platforms'])}")
     table = Table("順位", "ファイル", "カテゴリ", "品質", "理由")
     for i, row in enumerate(summary["selected"], start=1):
-        table.add_row(str(i), row["name"], row["category"], f"{row['quality_score']:.3f}", row["reason"])
+        table.add_row(
+            str(i),
+            row["name"],
+            row["category"],
+            f"{row['quality_score']:.3f}",
+            row["reason"],
+        )
     console.print(table)
     if summary.get("output_folder_id"):
-        console.print(f"出力フォルダ: https://drive.google.com/drive/folders/{summary['output_folder_id']}")
+        console.print(
+            "出力フォルダ: "
+            f"https://drive.google.com/drive/folders/{summary['output_folder_id']}"
+        )
 
 
 @app.command("drive")
 def drive_command(
     folder: str = typer.Argument(..., help="Google Drive フォルダ URL または folder ID"),
-    credentials: str | None = typer.Option(None, "--credentials", help="Google OAuth Desktop App credentials.json"),
+    credentials: str | None = typer.Option(
+        None,
+        "--credentials",
+        help="Google OAuth Desktop App credentials.json",
+    ),
     token_file: str | None = typer.Option(None, "--token-file", help="OAuth token 保存先"),
     output_folder_name: str = typer.Option("リスティング用_加工済み", "--output-folder-name"),
     min_selected: int = typer.Option(15, "--min-selected", min=1),
@@ -35,13 +54,55 @@ def drive_command(
     dry_run: bool = typer.Option(False, "--dry-run", help="Driveへ出力せず選定だけ実行"),
     json_output: bool = typer.Option(False, "--json", help="結果をJSONで表示"),
 ):
-    """Drive内の写真から掲載価値の高いものだけを選び、別フォルダへ出力します。"""
+    """全対応プラットフォーム向けに処理します。"""
     try:
         summary = run_drive_pipeline(
             folder_url_or_id=folder,
             credentials=credentials,
             token_file=token_file,
             output_folder_name=output_folder_name,
+            min_selected=min_selected,
+            max_selected=max_selected,
+            dry_run=dry_run,
+            progress=lambda message: console.print(message, highlight=False),
+        )
+    except Exception as exc:
+        console.print(f"[red]エラー:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    if json_output:
+        console.print_json(json.dumps(summary, ensure_ascii=False))
+    else:
+        _show_summary(summary)
+
+
+@app.command("spaces")
+def spaces_command(
+    folder: str = typer.Argument(..., help="元写真の Google Drive フォルダ URL または folder ID"),
+    output_folder: str | None = typer.Option(
+        None,
+        "--output-folder",
+        help="既に作成済みの出力先フォルダ URL または ID",
+    ),
+    credentials: str | None = typer.Option(
+        None,
+        "--credentials",
+        help="Google OAuth Desktop App credentials.json",
+    ),
+    token_file: str | None = typer.Option(None, "--token-file", help="OAuth token 保存先"),
+    min_selected: int = typer.Option(15, "--min-selected", min=1),
+    max_selected: int = typer.Option(24, "--max-selected", min=1),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Driveへ出力せず選定だけ実行"),
+    json_output: bool = typer.Option(False, "--json", help="結果をJSONで表示"),
+):
+    """インスタベースとスペースマーケットだけを選定・補正・保存します。"""
+    try:
+        summary = run_drive_pipeline(
+            folder_url_or_id=folder,
+            credentials=credentials,
+            token_file=token_file,
+            output_folder_name="リスティング用_加工済み",
+            output_folder_id=output_folder,
+            platform_keys=("instabase", "spacemarket"),
             min_selected=min_selected,
             max_selected=max_selected,
             dry_run=dry_run,
